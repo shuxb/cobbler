@@ -1,0 +1,144 @@
+ks.cfg中文centos6.cfg英文
+
+
+
+Cobbler自动批量部署CentOS 6和CentOS 7
+
+[日期：2015-09-12]	来源：Linux社区  作者：ljbaby	[字体：大 中 小]
+Cobbler简介
+使用PXE批量部署时，有一个缺陷，即只能安装单一的操作系统（同一个版本，仅用一个kickstart文件）。但是在实际环境中，不同功能的服务器需要部署不同的环境，而cobbler正好满足了这一需求。cobbler基于python开发，是对PXE的二次封装，且提供了CLI和Web的管理形式，使得操作和管理更加简便。cobbler的实现与PXE类似，也需要tftp，httpd，dhcp这些服务。使用yum即可完成cobbler的安装，在安装的同时也会自动安装tftp和httpd服务，dhcp服务需要自行安装。
+cobbler的部署非常简单，首先添加distro，或直接导入光盘镜像，然后为某一个distro添加kickstart文件，一个distro可有多个kickstart文件，以实现同一版本的操作系统部署多个不一样的环境。
+实现过程
+实验环境：所有的服务均部署在同一台服务器上（192.168.3.10）
+安装cobbler
+[root@node1 ~]# yum install cobbler
+这个过程会自动安装tftp，httpd。
+Cobbler自动批量部署CentOS 6和CentOS 7
+自行安装dhcp。
+[root@node1 ~]# yum install dhcp
+tftp，httpd，dhcp，还包括DNS这些服务都可以由cobbler代为管理，也可以独立管理。这里都将这些服务设置为单独管理。
+[root@node1 ~]# vim /etc/cobbler/settings
+manage_dhcp: 0
+manage_dns: 0
+.....
+manage_tftpd: 0
+manage_rsync: 0
+配置dhcp服务
+[root@node1 ~]# cp /usr/share/doc/dhcp-4.1.1/dhcpd.conf.sample /etc/dhcp/dhcpd.conf
+[root@node1 ~]# vim /etc/dhcp/dhcpd.conf
+......
+......
+subnet 192.168.3.0 netmask 255.255.255.0 {
+  range 192.168.3.10 192.168.3.254;
+  option routers 192.168.3.1;
+  option broadcast-address 192.168.3.31;
+  default-lease-time 3600;
+  max-lease-time 7200;
+  next-server 192.168.3.10;      #指向pxe服务器
+  filename "pxelinux.0";
+}
+检查配置，启动服务：
+[root@node1 ~]# service dhcpd configtest
+Syntax: OK
+[root@node1 ~]# service dhcpd start
+Starting dhcpd:                                            [  OK  ]
+[root@node1 ~]# ss -tunl | grep 67
+udp    UNCONN    0      0                      *:67                    *:*
+启动tftp和rsync
+[root@node1 ~]# chkconfig tftp on
+[root@node1 ~]# chkconfig rsync on
+[root@node1 ~]# service xinetd start
+[root@node1 ~]# ss -tunl | grep 69
+udp    UNCONN    0      0                      *:69                    *:*
+启动cobbler服务
+在启动cobbler之前首先需要启动httpd服务。
+[root@node1 ~]# service httpd start
+[root@node1 ~]# service cobblerd start
+然后使用cobbler check检查cobbler的运行环境，第一次运行可能会存在如下错误（）：
+[root@node1 ~]# cobbler check
+The following are potential configuration items that you may want to fix:
+1 : The 'server' field in /etc/cobbler/settings must be set to something other than localhost, or kickstarting features will not work.  This should be a resolvable hostname or IP for the boot server as reachable by all machines that will use it.
+2 : For PXE to be functional, the 'next_server' field in /etc/cobbler/settings must be set to something other than 127.0.0.1, and should match the IP of the boot server on the PXE network.
+3 : some network boot-loaders are missing from /var/lib/cobbler/loaders, you may run 'cobbler get-loaders' to download them, or, if you only want to handle x86/x86_64 netbooting, you may ensure that you have installed a *recent* version of the syslinux package installed and can ignore this message entirely.  Files in this directory, should you want to support all architectures, should include pxelinux.0, menu.c32, elilo.efi, and yaboot. The 'cobbler get-loaders' command is the easiest way to resolve these requirements.
+4 : debmirror package is not installed, it will be required to manage debian deployments and repositories
+5 : ksvalidator was not found, install pykickstart
+6 : The default password used by the sample templates for newly installed machines (default_password_crypted in /etc/cobbler/settings) is still set to 'cobbler' and should be changed, try: "openssl passwd -1 -salt 'random-phrase-here' 'your-password-here'" to generate new one
+7 : fencing tools were not found, and are required to use the (optional) power management features. install cman or fence-agents to use them
+Restart cobblerd and then run 'cobbler sync' to apply changes.
+依次解决以上错误：
+1）设置server参数为cobbler服务器的IP地址
+# vim /etc/cobbler/settings
+# server: 192.168.3.10
+2）设置next_server为pxe服务器的IP地址
+# vim /etc/cobbler/settings
+# next_server: 192.168.3.10
+3）若仅为x86/x86_64架构的服务器提供服务，安装syslinux即可
+# yum install syslinux
+4）这一项可以忽略
+5）安装ksvalidator
+# yum install -y pykickstart
+6）为default_password_crypted参数设置新密码
+# openssl passwd -1 -salt `openssl rand -hex 6`
+# default_password_crypted: "passwd"
+7）install cman or fence-agents（可不装）
+修改完成后，重启服务：
+[root@node1 ~]# cobbler sync
+[root@node1 ~]# service cobblerd restart
+添加distro
+挂载光盘镜像
+[root@node3 ~]# mount /dev/cdrom /mnt/flash/
+添加一个distro（若有光盘镜像，推荐直接导入光盘镜像）
+[root@node1 ~]# cobbler import --name=CentOS-6.5-x86_64 --path=/mnt/flash/
+[root@node1 ~]# cobbler distro list
+  centos-6.5-x86_64
+若镜像文件很大，导入过程会很长。导入完成后，在/var/www/cobbler/ks_mirror目录下会生成一个--name指定的名称的目录，这个目录与挂载在本地的光盘镜像目录一致。
+Cobbler自动批量部署CentOS 6和CentOS 7
+制作kickstart文件
+kickstart文件的制作非常简单。
+首先安装system-config-kickstart。
+[root@node1 ~]# yum install system-config-kickstart
+执行system-config-kickstart启用图形界面进行配置（使用xmanager之类的连接程序）
+[root@node1 ~]# system-config-kickstart
+Cobbler自动批量部署CentOS 6和CentOS 7
+配置的过程与安装操作系统差不多，按照提示一个一个配置即可。在配置之前需要先挂载光盘镜像，并且将该光盘镜像作为本地的yum源，在Package Selection这一项即会显示该光盘镜像中可安装的软件包。
+Cobbler自动批量部署CentOS 6和CentOS 7
+若配置的是其他版本操作系统的ks文件，将对应的光盘镜像文件作为本地的yum源即可，例如需要为centOS7制作ks文件。
+换成centOS7的ISO文件。
+Cobbler自动批量部署CentOS 6和CentOS 7
+在/etc/yum.repos.d目录下添加本地的repo文件，清理之前的缓存，然后挂载。
+[root@CentOS-6 ~]# yum clean all
+Loaded plugins: fastestmirror, security
+Cleaning repos:
+Cleaning up Everything
+Cleaning up list of fastest mirrors
+[root@CentOS-6 ~]# mount /dev/cdrom /mnt/flash/
+mount: block device /dev/sr0 is write-protected, mounting read-only
+############################
+Cobbler自动批量部署CentOS 6和CentOS 7
+Package Selection即为centOS7镜像光盘上的软件包。需要注意的是system-config-kickstart不支持LVM，若需要添加LVM还需要在ks文件中手动进行修改。
+为distro添加profile
+即为某个distro提供kickstart文件来生成一个特定的系统安装配置。例如为刚才添加的distro（ centos-6.5-x86_64）添加一个kickstart文件。
+首先验证ks文件是否存在语法错误，然后复制到指定目录下添加：
+[root@node1 ~]# ksvalidator ks.cfg
+[root@node1 ~]# cp /root/ks.cfg /var/lib/cobbler/kickstarts/
+[root@node1 ~]# cobbler profile add --name=centos-6.5-base --distro=centos-6.5-x86_64 --kickstart=/var/lib/cobbler/kickstarts/ks.cfg
+#####添加第二个profile
+[root@node1 ~]# cp /root/ks-mysql.cfg /var/lib/cobbler/kickstarts/
+[root@node1 ~]# cobbler profile add --name=centos-6.5-mysql --distro=centos-6.5-x86_64 --kickstart=/var/lib/cobbler/kickstarts/ks-mysql.cfg
+list查看添加的profile：
+[root@node1 kickstarts]# cobbler profile list
+  centos-6.5-base
+  centos-6.5-mysql
+  centos-6.5-x86_64
+添加完成之后执行cobbler sync，然后就可以使用了。
+[root@node3 ~]# cobbler sync
+测试过程
+新添加一台虚拟机，不安装操作系统。
+Cobbler自动批量部署CentOS 6和CentOS 7
+选择需要的版本，开始安装
+Cobbler自动批量部署CentOS 6和CentOS 7
+cobbler的部署已实现.................^_^
+更多详情见请继续阅读下一页的精彩内容： http://www.linuxidc.com/Linux/2015-09/122945p2.htm
+CentOS 6.5 安装和配置Cobbler  http://www.linuxidc.com/Linux/2015-02/113043.htm
+Cobbler远程安装CentOS系统  http://www.linuxidc.com/Linux/2015-02/113163.htm
+Cobbler批量安装Ubuntu/CentOS系统  http://www.linuxidc.com/Linux/2015-02/113167.htm
